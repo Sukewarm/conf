@@ -1,16 +1,18 @@
 /**
  * Plasma One Rewards Tracker for Loon
- * Reads primaryCashBack responses, stores snapshots locally, and posts local notifications.
- * It does not modify the response and does not send captured data to any third-party server.
+ * - change mode only reacts to monetary changes
+ * - local history only stores reward/payout amounts plus display labels/dates
+ * - referral redemption/status fields are not persisted
+ * - captured data is never sent to a third-party server
  */
 
 (() => {
   const STORE_KEY = "plasma_rewards_tracker_v1";
   const HISTORY_LIMIT = 100;
+  const EPSILON = 0.0000005;
 
   const arg = (typeof $argument !== "undefined" && $argument) ? $argument : {};
-  const notifyMode = String(arg.notify || "change").toLowerCase();
-  const showReferral = !(arg.show_referral === false || String(arg.show_referral).toLowerCase() === "false");
+  const notifyMode = String(arg.notify || "change").toLowerCase(); // change | always | off
 
   function fixed(n, digits = 4) {
     const x = Number(n || 0);
@@ -19,7 +21,7 @@
 
   function signed(n, digits = 4) {
     const x = Number(n || 0);
-    if (!Number.isFinite(x) || Math.abs(x) < 0.0000005) return "";
+    if (!Number.isFinite(x) || Math.abs(x) < EPSILON) return "";
     return `${x > 0 ? "+" : ""}${x.toFixed(digits)}`;
   }
 
@@ -28,17 +30,53 @@
     if (typeof v === "object" && v !== null && "amount" in v && "decimals" in v) {
       const raw = Number(v.amount);
       const decimals = Number(v.decimals || 0);
-      if (Number.isFinite(raw) && Number.isFinite(decimals)) return raw / Math.pow(10, decimals);
+      if (Number.isFinite(raw) && Number.isFinite(decimals)) {
+        return raw / Math.pow(10, decimals);
+      }
     }
     if (typeof v === "object" && v !== null && "amount" in v) return amount(v.amount);
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
   }
 
+  // Keep only reward/payout values and the labels/dates needed to display them.
+  // Referral code, redeemed count, remaining count, redeemed_at, cash-out state, etc. are discarded.
+  function sanitizeSnapshot(s) {
+    if (!s || typeof s !== "object") return null;
+    return {
+      capturedAt: s.capturedAt || "",
+      total: Number(s.total || 0),
+      totalCashBack: Number(s.totalCashBack || 0),
+      totalReferrals: Number(s.totalReferrals || 0),
+      monthTotal: Number(s.monthTotal || 0),
+      monthCashBack: Number(s.monthCashBack || 0),
+      monthReferrals: Number(s.monthReferrals || 0),
+      periodStart: s.periodStart || "",
+      periodEnd: s.periodEnd || "",
+      pending: Number(s.pending || 0),
+      pendingLabel: s.pendingLabel || "Accruing",
+      accrued: Number(s.accrued || 0),
+      settlementLabel: s.settlementLabel || "Settlement",
+      paid: Number(s.paid || 0),
+      paidLabel: s.paidLabel || "Paid"
+    };
+  }
+
   function readStore() {
     try {
       const raw = $persistentStore.read(STORE_KEY);
-      return raw ? JSON.parse(raw) : null;
+      if (!raw) return null;
+      const stored = JSON.parse(raw);
+      const history = Array.isArray(stored.history)
+        ? stored.history.map(sanitizeSnapshot).filter(Boolean).slice(-HISTORY_LIMIT)
+        : [];
+      return {
+        version: 2,
+        first: sanitizeSnapshot(stored.first),
+        previousChange: sanitizeSnapshot(stored.previousChange),
+        last: sanitizeSnapshot(stored.last),
+        history
+      };
     } catch (e) {
       console.log(`[Plasma Rewards] readStore error: ${e}`);
       return null;
@@ -54,13 +92,6 @@
     }
   }
 
-  function primaryReferralCode(data) {
-    const codes = Array.isArray(data.referral_codes) ? data.referral_codes : [];
-    return codes.find(x => x && x.has_referral_cut === true) ||
-      codes.find(x => x && Number(x.max_redemptions || 0) > 1) ||
-      codes[0] || null;
-  }
-
   function makeSnapshot(payload) {
     const data = payload && payload.data ? payload.data : {};
     const period = data.period_summary || {};
@@ -69,9 +100,8 @@
     const pending = payouts.pending || {};
     const accrued = payouts.accrued || {};
     const paid = payouts.paid || {};
-    const refCode = primaryReferralCode(data);
 
-    return {
+    return sanitizeSnapshot({
       capturedAt: new Date().toISOString(),
       total: amount(reward.total),
       totalCashBack: amount(reward.cash_back),
@@ -86,19 +116,14 @@
       accrued: amount(accrued.amount),
       settlementLabel: accrued.label || "Settlement",
       paid: amount(paid.amount),
-      paidLabel: paid.label || "Paid",
-      referralRate: data.referral_rate_percentage || "",
-      cashOutEnabled: data.is_cash_out_enabled === true,
-      referralCode: refCode ? (refCode.code || "") : "",
-      redeemed: refCode ? Number(refCode.redeemed_count || 0) : 0,
-      remaining: refCode ? Number(refCode.remaining_redemptions || 0) : 0,
-      maxRedemptions: refCode ? Number(refCode.max_redemptions || 0) : 0,
-      latestRedeemedAt: refCode ? (refCode.redeemed_at || "") : ""
-    };
+      paidLabel: paid.label || "Paid"
+    });
   }
 
   function delta(now, prev) {
-    if (!prev) return { total: 0, monthTotal: 0, referrals: 0, monthReferrals: 0, pending: 0, accrued: 0, paid: 0, redeemed: 0 };
+    if (!prev) {
+      return { total: 0, monthTotal: 0, referrals: 0, monthReferrals: 0, pending: 0, accrued: 0, paid: 0 };
+    }
     return {
       total: now.total - prev.total,
       monthTotal: now.monthTotal - prev.monthTotal,
@@ -106,17 +131,19 @@
       monthReferrals: now.monthReferrals - prev.monthReferrals,
       pending: now.pending - prev.pending,
       accrued: now.accrued - prev.accrued,
-      paid: now.paid - prev.paid,
-      redeemed: now.redeemed - prev.redeemed
+      paid: now.paid - prev.paid
     };
   }
 
-  function materiallyChanged(now, prev) {
+  // "change" means money changed. Labels, dates, referral state, timestamps, etc. do not trigger it.
+  function moneyChanged(now, prev) {
     if (!prev) return true;
-    const moneyFields = ["total", "totalCashBack", "totalReferrals", "monthTotal", "monthCashBack", "monthReferrals", "pending", "accrued", "paid"];
-    if (moneyFields.some(k => Math.abs(Number(now[k] || 0) - Number(prev[k] || 0)) > 0.0000005)) return true;
-    const otherFields = ["settlementLabel", "pendingLabel", "paidLabel", "cashOutEnabled", "referralCode", "redeemed", "remaining", "maxRedemptions", "latestRedeemedAt"];
-    return otherFields.some(k => now[k] !== prev[k]);
+    const moneyFields = [
+      "total", "totalCashBack", "totalReferrals",
+      "monthTotal", "monthCashBack", "monthReferrals",
+      "pending", "accrued", "paid"
+    ];
+    return moneyFields.some(k => Math.abs(Number(now[k] || 0) - Number(prev[k] || 0)) > EPSILON);
   }
 
   function summaryLines(s, d, first) {
@@ -135,18 +162,19 @@
 
     if (first) {
       const sinceFirst = s.total - Number(first.total || 0);
-      if (Math.abs(sinceFirst) > 0.0000005) lines.push(`开始抓取以来：${signed(sinceFirst)} USDT`);
+      if (Math.abs(sinceFirst) > EPSILON) lines.push(`开始抓取以来：${signed(sinceFirst)} USDT`);
     }
 
-    if (showReferral && s.referralCode) lines.push(`${s.referralCode}：${s.redeemed}/${s.maxRedemptions}，剩 ${s.remaining}`);
     return lines;
   }
 
   function notifySnapshot(s, d, first, force = false) {
     if (notifyMode === "off" && !force) return;
-    const paidUp = d && d.paid > 0.0000005;
+    const paidUp = d && d.paid > EPSILON;
     const title = paidUp ? "Plasma 已支付更新" : "Plasma Rewards 更新";
-    const subtitle = paidUp ? `Paid +${fixed(d.paid)} USDT` : `${s.settlementLabel || "Settlement"} · ${fixed(s.accrued)} USDT`;
+    const subtitle = paidUp
+      ? `Paid +${fixed(d.paid)} USDT`
+      : `${s.settlementLabel || "Settlement"} · ${fixed(s.accrued)} USDT`;
     $notification.post(title, subtitle, summaryLines(s, d, first).join("\n"));
   }
 
@@ -159,7 +187,7 @@
     }
     const s = store.last;
     const d = store.previousChange ? delta(s, store.previousChange) : null;
-    $notification.post("Plasma Rewards 当前记录", `最后抓取：${s.capturedAt || "未知"}`, summaryLines(s, d, store.first).join("\n"));
+    $notification.post("Plasma Rewards 当前记录", `最后金额变化：${s.capturedAt || "未知"}`, summaryLines(s, d, store.first).join("\n"));
     $done();
   }
 
@@ -184,30 +212,42 @@
     const oldStore = readStore() || {};
     const previous = oldStore.last || null;
     const first = oldStore.first || snapshot;
-    const changed = materiallyChanged(snapshot, previous);
+    const changed = moneyChanged(snapshot, previous);
     const d = delta(snapshot, previous);
-    const history = Array.isArray(oldStore.history) ? oldStore.history : [];
+    const history = Array.isArray(oldStore.history) ? oldStore.history.slice(-HISTORY_LIMIT) : [];
 
+    let newStore;
     if (changed) {
       history.push(snapshot);
       while (history.length > HISTORY_LIMIT) history.shift();
+      newStore = {
+        version: 2,
+        first,
+        previousChange: previous || null,
+        last: snapshot,
+        history
+      };
+    } else {
+      // Do not persist non-monetary changes from this response.
+      // Rewriting the sanitized old store also removes referral/status fields left by older versions.
+      newStore = {
+        version: 2,
+        first,
+        previousChange: oldStore.previousChange || null,
+        last: previous,
+        history
+      };
     }
 
-    const newStore = {
-      version: 1,
-      first,
-      previousChange: changed ? (previous || null) : (oldStore.previousChange || null),
-      last: snapshot,
-      lastSeenAt: snapshot.capturedAt,
-      hitCount: Number(oldStore.hitCount || 0) + 1,
-      changeCount: Number(oldStore.changeCount || 0) + (changed ? 1 : 0),
-      history
-    };
-
     writeStore(newStore);
-    console.log(`[Plasma Rewards] hit #${newStore.hitCount} | total=${fixed(snapshot.total)} | pending=${fixed(snapshot.pending)} | ${snapshot.settlementLabel}=${fixed(snapshot.accrued)} | paid=${fixed(snapshot.paid)} | changed=${changed}`);
 
-    if (notifyMode === "always" || (notifyMode === "change" && changed)) notifySnapshot(snapshot, d, first);
+    console.log(`[Plasma Rewards] total=${fixed(snapshot.total)} | pending=${fixed(snapshot.pending)} | ${snapshot.settlementLabel}=${fixed(snapshot.accrued)} | paid=${fixed(snapshot.paid)} | moneyChanged=${changed}`);
+
+    if (notifyMode === "always") {
+      notifySnapshot(snapshot, d, first);
+    } else if (notifyMode === "change" && changed) {
+      notifySnapshot(snapshot, d, first);
+    }
   } catch (e) {
     console.log(`[Plasma Rewards] parse error: ${e}`);
   }
