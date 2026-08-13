@@ -1,0 +1,12 @@
+#!name = Plasma Dashboard
+#!desc = 本地只读查看 Plasma Rewards Tracker 已保存的数据；不写入、不上传，不需要 MITM。
+#!author = ChatGPT
+#!system = iOS,iPadOS,macOS
+#!tag = Plasma,Dashboard
+#!type = normal
+
+[Host]
+plasma-dashboard.test = 192.0.2.1
+
+[Script]
+http-request ^http:\/\/plasma-dashboard\.test(?:\/.*)?$ script-path=https://raw.githubusercontent.com/Sukewarm/conf/main/Script/plasma_dashboard.js,requires-body=false,timeout=10,tag=Plasma Dashboard,enable=true
