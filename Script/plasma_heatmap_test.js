@@ -1,6 +1,6 @@
 /**
- * Plasma Rewards Heatmap for Loon (experimental v3)
- * Minimal GitHub Dark UI. Read-only.
+ * Plasma Rewards Heatmap for Loon (experimental v4)
+ * GitHub contribution-inspired UI. Read-only.
  * Reads plasma_rewards_tracker_v1 and never writes to persistentStore.
  */
 (() => {
@@ -14,16 +14,16 @@
     return Number.isFinite(n) ? n : null;
   }
 
-  function fixed(v, digits = 4) {
+  function fixed(v, digits) {
     const n = num(v);
-    return n === null ? "—" : n.toFixed(digits);
+    return n === null ? "—" : n.toFixed(digits == null ? 4 : digits);
   }
 
-  function signed(v, digits = 4) {
+  function signed(v, digits) {
     const n = num(v);
     if (n === null) return "—";
     if (Math.abs(n) < 0.0000005) return "0.0000";
-    return (n > 0 ? "+" : "") + n.toFixed(digits);
+    return (n > 0 ? "+" : "") + n.toFixed(digits == null ? 4 : digits);
   }
 
   function esc(v) {
@@ -41,12 +41,12 @@
     if (total === null) return null;
     return {
       capturedAt: String(s.capturedAt),
-      total,
-      pending: num(s.pending) ?? 0,
-      accrued: num(s.accrued) ?? 0,
-      paid: num(s.paid) ?? 0,
-      totalReferrals: num(s.totalReferrals) ?? 0,
-      totalCashBack: num(s.totalCashBack) ?? 0
+      total: total,
+      pending: num(s.pending) === null ? 0 : num(s.pending),
+      accrued: num(s.accrued) === null ? 0 : num(s.accrued),
+      paid: num(s.paid) === null ? 0 : num(s.paid),
+      totalReferrals: num(s.totalReferrals) === null ? 0 : num(s.totalReferrals),
+      totalCashBack: num(s.totalCashBack) === null ? 0 : num(s.totalCashBack)
     };
   }
 
@@ -60,24 +60,46 @@
             .sort((a, b) => new Date(a.capturedAt) - new Date(b.capturedAt))
             .slice(-100)
         : [];
-      return { first: snap(stored.first), last: snap(stored.last), history };
+      return {
+        first: snap(stored.first),
+        last: snap(stored.last),
+        history: history
+      };
     } catch (e) {
       console.log("[Plasma Heatmap] read error: " + e);
       return null;
     }
   }
 
-  function pad2(n) { return String(n).padStart(2, "0"); }
-  function dateKey(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
-  function monthKey(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; }
-  function addMonths(d, n) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
 
-  function selectedMonth(url) {
+  function dateKey(d) {
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
+
+  function monthKey(d) {
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1);
+  }
+
+  function monthShort(d) {
+    const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return names[d.getMonth()];
+  }
+
+  function addMonths(d, n) {
+    return new Date(d.getFullYear(), d.getMonth() + n, 1);
+  }
+
+  function parseSelectedMonth(url) {
     const m = String(url || "").match(/[?&]month=(\d{4})-(\d{2})(?:&|$)/);
     if (m) {
       const y = Number(m[1]);
       const mon = Number(m[2]);
-      if (y >= 2000 && y <= 2200 && mon >= 1 && mon <= 12) return new Date(y, mon - 1, 1);
+      if (y >= 2000 && y <= 2200 && mon >= 1 && mon <= 12) {
+        return new Date(y, mon - 1, 1);
+      }
     }
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -85,6 +107,8 @@
 
   function buildDaily(history) {
     const days = Object.create(null);
+    if (!Array.isArray(history)) return days;
+
     for (let i = 1; i < history.length; i++) {
       const prev = history[i - 1];
       const cur = history[i];
@@ -119,6 +143,7 @@
       if (refDelta > 0) d.referral += refDelta;
       if (cashDelta > 0) d.cashback += cashDelta;
     }
+
     return days;
   }
 
@@ -127,16 +152,22 @@
     const p = (sorted.length - 1) * q;
     const i = Math.floor(p);
     const r = p - i;
-    return sorted[i + 1] === undefined ? sorted[i] : sorted[i] + r * (sorted[i + 1] - sorted[i]);
+    return sorted[i + 1] === undefined
+      ? sorted[i]
+      : sorted[i] + r * (sorted[i + 1] - sorted[i]);
   }
 
-  function thresholds(values) {
-    const p = values.filter(v => v > 0).sort((a, b) => a - b);
-    if (!p.length) return [0, 0, 0];
-    return [quantile(p, .25), quantile(p, .5), quantile(p, .75)];
+  function makeThresholds(values) {
+    const positives = values.filter(v => v > 0).sort((a, b) => a - b);
+    if (!positives.length) return [0, 0, 0];
+    return [
+      quantile(positives, 0.25),
+      quantile(positives, 0.50),
+      quantile(positives, 0.75)
+    ];
   }
 
-  function level(v, t) {
+  function levelFor(v, t) {
     if (!(v > 0)) return 0;
     if (v <= t[0]) return 1;
     if (v <= t[1]) return 2;
@@ -145,209 +176,329 @@
   }
 
   function coverage(history) {
-    if (!history.length) return null;
+    if (!history || !history.length) return null;
     const first = new Date(history[0].capturedAt);
     const last = new Date(history[history.length - 1].capturedAt);
     if (Number.isNaN(first.getTime()) || Number.isNaN(last.getTime())) return null;
-    return { first, last };
+    return { first: first, last: last };
   }
 
-  function model(month, daily, history) {
+  function monthSummary(month, daily, cov) {
     const y = month.getFullYear();
     const m = month.getMonth();
     const start = new Date(y, m, 1);
     const end = new Date(y, m + 1, 0);
     const count = end.getDate();
-    const startDow = start.getDay();
 
-    const values = [];
     let earned = 0;
     let active = 0;
     let best = null;
 
     for (let day = 1; day <= count; day++) {
-      const info = daily[dateKey(new Date(y, m, day))] || { earned: 0 };
-      values.push(info.earned || 0);
-      if (info.earned > 0) {
+      const key = dateKey(new Date(y, m, day));
+      const info = daily[key];
+      if (info && info.earned > 0) {
         earned += info.earned;
-        active++;
-        if (!best || info.earned > best.earned) best = { day, earned: info.earned };
+        active += 1;
+        if (!best || info.earned > best.earned) {
+          best = { day: day, earned: info.earned };
+        }
       }
     }
 
-    const t = thresholds(values);
-    const cells = [];
-    for (let i = 0; i < startDow; i++) cells.push('<div class="day empty"></div>');
+    const partial = !!(cov && cov.first > start && cov.first <= end);
+    const outside = !!(cov && (end < new Date(cov.first.getFullYear(), cov.first.getMonth(), cov.first.getDate()) || start > cov.last));
 
-    const today = dateKey(new Date());
-    for (let day = 1; day <= count; day++) {
-      const d = new Date(y, m, day);
+    return {
+      start: start,
+      end: end,
+      earned: earned,
+      active: active,
+      best: best,
+      partial: partial,
+      outside: outside
+    };
+  }
+
+  function yearGraph(year, selectedMonth, daily, cov) {
+    const jan1 = new Date(year, 0, 1);
+    const dec31 = new Date(year, 11, 31);
+    const graphStart = new Date(jan1);
+    graphStart.setDate(graphStart.getDate() - graphStart.getDay());
+    const graphEnd = new Date(dec31);
+    graphEnd.setDate(graphEnd.getDate() + (6 - graphEnd.getDay()));
+
+    const allValues = [];
+    for (let d = new Date(jan1); d <= dec31; d.setDate(d.getDate() + 1)) {
+      const info = daily[dateKey(d)];
+      if (info && info.earned > 0) allValues.push(info.earned);
+    }
+    const thresholds = makeThresholds(allValues);
+
+    const totalDays = Math.round((graphEnd.getTime() - graphStart.getTime()) / 86400000) + 1;
+    const weeks = Math.ceil(totalDays / 7);
+    const cells = [];
+    const todayKey = dateKey(new Date());
+    const selectedKey = monthKey(selectedMonth);
+
+    for (let i = 0; i < totalDays; i++) {
+      const d = new Date(graphStart);
+      d.setDate(graphStart.getDate() + i);
+      const inYear = d.getFullYear() === year;
+      if (!inYear) {
+        cells.push('<span class="cell blank" aria-hidden="true"></span>');
+        continue;
+      }
+
       const key = dateKey(d);
       const info = daily[key] || {
         earned: 0, net: 0, events: 0, referral: 0, cashback: 0,
         pending: 0, accrued: 0, paid: 0
       };
-      const lv = level(info.earned, t);
-      const isToday = key === today ? " today" : "";
+
+      const known = !!(cov && d >= new Date(cov.first.getFullYear(), cov.first.getMonth(), cov.first.getDate()) && d <= new Date(cov.last.getFullYear(), cov.last.getMonth(), cov.last.getDate()));
+      const future = d > new Date();
+      const lv = known ? levelFor(info.earned, thresholds) : 0;
+      const cls = [
+        "cell",
+        known ? ("lv" + lv) : "unknown",
+        monthKey(d) === selectedKey ? "month-focus" : "",
+        key === todayKey ? "today" : "",
+        future ? "future" : ""
+      ].filter(Boolean).join(" ");
+
       cells.push(
-        `<button class="day lv${lv}${isToday}" data-date="${key}" data-earned="${fixed(info.earned)}" ` +
-        `data-net="${fixed(info.net)}" data-events="${info.events}" data-ref="${fixed(info.referral)}" ` +
-        `data-cash="${fixed(info.cashback)}" data-pending="${fixed(info.pending)}" ` +
-        `data-accrued="${fixed(info.accrued)}" data-paid="${fixed(info.paid)}" ` +
-        `aria-label="${esc(key + " +" + fixed(info.earned) + " USDT")}"><span>${day}</span></button>`
+        '<button class="' + cls + '"' +
+        ' data-date="' + key + '"' +
+        ' data-known="' + (known ? "1" : "0") + '"' +
+        ' data-earned="' + fixed(info.earned) + '"' +
+        ' data-net="' + fixed(info.net) + '"' +
+        ' data-events="' + info.events + '"' +
+        ' data-ref="' + fixed(info.referral) + '"' +
+        ' data-cash="' + fixed(info.cashback) + '"' +
+        ' data-pending="' + fixed(info.pending) + '"' +
+        ' data-accrued="' + fixed(info.accrued) + '"' +
+        ' data-paid="' + fixed(info.paid) + '"' +
+        ' data-month="' + monthKey(d) + '"' +
+        ' aria-label="' + esc(key + (known ? (" +" + fixed(info.earned) + " USDT") : " no captured history") + '"></button>'
       );
     }
 
-    const trailing = (7 - ((startDow + count) % 7)) % 7;
-    for (let i = 0; i < trailing; i++) cells.push('<div class="day empty"></div>');
+    const monthLabels = [];
+    for (let m = 0; m < 12; m++) {
+      const first = new Date(year, m, 1);
+      const diff = Math.floor((first.getTime() - graphStart.getTime()) / 86400000);
+      const weekIndex = Math.floor(diff / 7);
+      monthLabels.push(
+        '<span style="grid-column:' + (weekIndex + 1) + ' / span 4">' + monthShort(first) + '</span>'
+      );
+    }
 
-    const cov = coverage(history);
-    const partial = !!(cov && cov.first > start && cov.first <= end);
-    const outside = !!(cov && (end < new Date(cov.first.getFullYear(), cov.first.getMonth(), cov.first.getDate()) || start > cov.last));
-
-    return { start, end, cells, earned, active, best, cov, partial, outside };
+    return {
+      weeks: weeks,
+      cells: cells,
+      monthLabels: monthLabels
+    };
   }
 
-  function monthTitle(d) {
-    return `${d.getFullYear()} / ${pad2(d.getMonth() + 1)}`;
+  function monthLabel(d) {
+    return monthShort(d).toUpperCase() + " " + d.getFullYear();
+  }
+
+  function formatBest(month, best) {
+    if (!best) return "No activity";
+    return monthShort(month) + " " + pad2(best.day) + " · +" + fixed(best.earned) + " USDT";
   }
 
   function page(store) {
     if (!store || !store.last || !store.history || store.history.length < 2) {
-      return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0d1117"><title>Plasma Heatmap</title><style>${css()}</style></head><body><main><header><div class="brand">PLASMA / REWARDS</div></header><div class="nodata">NO DATA<br><span>至少需要两次金额变化记录。</span></div></main></body></html>`;
+      return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#000000"><meta name="color-scheme" content="dark"><title>Plasma Heatmap</title><style>' + css() + '</style></head><body><main class="shell"><header class="top"><div><h1>Reward activity</h1><p>Local Tracker history</p></div></header><section class="empty">No captured history yet.</section></main></body></html>';
     }
 
-    const month = selectedMonth(requestUrl);
+    const selected = parseSelectedMonth(requestUrl);
     const daily = buildDaily(store.history);
-    const m = model(month, daily, store.history);
-    const prev = monthKey(addMonths(month, -1));
-    const next = monthKey(addMonths(month, 1));
-    const best = m.best ? `${pad2(m.best.day)} / ${fixed(m.best.earned)}` : "—";
-    const range = m.cov ? `${dateKey(m.cov.first)} — ${dateKey(m.cov.last)}` : "—";
+    const cov = coverage(store.history);
+    const summary = monthSummary(selected, daily, cov);
+    const graph = yearGraph(selected.getFullYear(), selected, daily, cov);
+    const prev = monthKey(addMonths(selected, -1));
+    const next = monthKey(addMonths(selected, 1));
+    const bestText = formatBest(selected, summary.best);
+    const rangeText = cov ? (dateKey(cov.first) + " → " + dateKey(cov.last)) : "—";
 
     let note = "";
-    if (m.partial) note = `<div class="note">PARTIAL DATA · 本月早期记录已超出当前 100 条历史范围。</div>`;
-    if (m.outside) note = `<div class="note">OUTSIDE RANGE · 当前历史没有覆盖这个月份。</div>`;
+    if (summary.partial) {
+      note = '<div class="note">This month is only partially covered by the 100 saved history points.</div>';
+    } else if (summary.outside) {
+      note = '<div class="note">This month is outside the saved history range.</div>';
+    }
 
-    return `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0d1117">
-<meta name="color-scheme" content="dark">
-<title>Plasma Heatmap</title>
-<style>${css()}</style>
-</head>
-<body>
-<main>
-  <header>
-    <div>
-      <div class="brand">PLASMA / REWARDS</div>
-      <div class="sub">LOCAL ACTIVITY</div>
-    </div>
-    <a class="dashboard" href="http://plasma-dashboard.test/">DASHBOARD</a>
-  </header>
+    return '<!doctype html>' +
+      '<html lang="zh-CN"><head>' +
+      '<meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' +
+      '<meta name="theme-color" content="#000000">' +
+      '<meta name="color-scheme" content="dark">' +
+      '<title>Plasma Heatmap</title>' +
+      '<style>' + css() + '</style></head><body>' +
+      '<main class="shell">' +
 
-  <section class="summary">
-    <div><label>MONTH</label><strong>${fixed(m.earned)}</strong><small>USDT</small></div>
-    <div><label>ACTIVE</label><strong>${m.active}</strong><small>DAYS</small></div>
-    <div><label>PEAK</label><strong>${best}</strong><small>DAY / USDT</small></div>
-  </section>
+      '<header class="top">' +
+      '<div><h1>Reward activity</h1><p>Local Tracker history · read only</p></div>' +
+      '<a href="http://plasma-dashboard.test/">Dashboard</a>' +
+      '</header>' +
 
-  ${note}
+      '<section class="month-summary">' +
+      '<div class="summary-copy">' +
+      '<div class="month-label">' + monthLabel(selected) + '</div>' +
+      '<div class="amount">+' + fixed(summary.earned) + ' <span>USDT</span></div>' +
+      '<div class="meta">' + summary.active + ' active days&nbsp;&nbsp;·&nbsp;&nbsp;Best ' + esc(bestText) + '</div>' +
+      '</div>' +
+      '<div class="month-nav"><a href="/?month=' + prev + '" aria-label="Previous month">‹</a><a href="/?month=' + next + '" aria-label="Next month">›</a></div>' +
+      '</section>' +
 
-  <section class="calendar-box">
-    <div class="monthbar">
-      <a href="/?month=${prev}">‹</a>
-      <div><h1>${monthTitle(month)}</h1><p>${esc(range)}</p></div>
-      <a href="/?month=${next}">›</a>
-    </div>
+      note +
 
-    <div class="weekdays"><span>SUN</span><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span></div>
-    <div class="calendar">${m.cells.join("")}</div>
+      '<section class="graph-panel">' +
+      '<div class="graph-head"><span>' + selected.getFullYear() + ' reward activity</span><span class="coverage">' + esc(rangeText) + '</span></div>' +
+      '<div class="graph-scroll" id="graphScroll">' +
+      '<div class="graph-inner" style="--weeks:' + graph.weeks + '">' +
+      '<div class="weekday-labels"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div>' +
+      '<div class="graph-main">' +
+      '<div class="month-labels">' + graph.monthLabels.join("") + '</div>' +
+      '<div class="cells">' + graph.cells.join("") + '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="legend"><span>Less</span><i class="lv0"></i><i class="lv1"></i><i class="lv2"></i><i class="lv3"></i><i class="lv4"></i><span>More</span></div>' +
+      '</section>' +
 
-    <div class="legend"><span>LESS</span><i class="lv0"></i><i class="lv1"></i><i class="lv2"></i><i class="lv3"></i><i class="lv4"></i><span>MORE</span></div>
-  </section>
+      '<section class="detail" id="detail">' +
+      '<div class="detail-date">Select a day</div>' +
+      '<div class="detail-value">—</div>' +
+      '<div class="detail-meta">Tap a square to inspect that day.</div>' +
+      '</section>' +
 
-  <section class="detail" id="detail">
-    <div class="detail-head"><span>SELECT A DAY</span><strong>—</strong></div>
-    <div class="detail-main">点击格子查看当天变化</div>
-    <div class="detail-grid">
-      <div><label>EVENTS</label><strong>—</strong></div>
-      <div><label>REFERRAL</label><strong>—</strong></div>
-      <div><label>CASHBACK</label><strong>—</strong></div>
-      <div><label>NET</label><strong>—</strong></div>
-      <div><label>ACCRUING</label><strong>—</strong></div>
-      <div><label>SETTLEMENT</label><strong>—</strong></div>
-      <div><label>PAID</label><strong>—</strong></div>
-    </div>
-  </section>
+      '<footer>Stored locally in Loon · ' + STORE_KEY + '</footer>' +
+      '</main>' +
 
-  <footer>READ ONLY · ${STORE_KEY}</footer>
-</main>
-<script>
-(() => {
-  const all = Array.from(document.querySelectorAll('.day:not(.empty)'));
-  const detail = document.getElementById('detail');
-  all.forEach(cell => cell.addEventListener('click', () => {
-    all.forEach(x => x.classList.remove('selected'));
-    cell.classList.add('selected');
-    const d = cell.dataset;
-    detail.innerHTML =
-      '<div class="detail-head"><span>' + d.date + '</span><strong>+' + d.earned + ' USDT</strong></div>' +
-      '<div class="detail-main">DAILY ACTIVITY</div>' +
-      '<div class="detail-grid">' +
-      '<div><label>EVENTS</label><strong>' + d.events + '</strong></div>' +
-      '<div><label>REFERRAL</label><strong>+' + d.ref + '</strong></div>' +
-      '<div><label>CASHBACK</label><strong>+' + d.cash + '</strong></div>' +
-      '<div><label>NET</label><strong>' + (Number(d.net) > 0 ? '+' : '') + d.net + '</strong></div>' +
-      '<div><label>ACCRUING</label><strong>' + signedClient(d.pending) + '</strong></div>' +
-      '<div><label>SETTLEMENT</label><strong>' + signedClient(d.accrued) + '</strong></div>' +
-      '<div><label>PAID</label><strong>' + signedClient(d.paid) + '</strong></div>' +
-      '</div>';
-  }));
-  function signedClient(v) {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return '—';
-    return (n > 0 ? '+' : '') + v;
-  }
-})();
-</script>
-</body>
-</html>`;
+      '<script>' +
+      '(function(){' +
+      'var cells=Array.prototype.slice.call(document.querySelectorAll(".cell:not(.blank)"));' +
+      'var detail=document.getElementById("detail");' +
+      'cells.forEach(function(cell){cell.addEventListener("click",function(){' +
+      'cells.forEach(function(x){x.classList.remove("selected")});cell.classList.add("selected");' +
+      'var d=cell.dataset;' +
+      'if(d.known!=="1"){' +
+      'detail.innerHTML="<div class=\"detail-date\">"+d.date+"</div><div class=\"detail-value\">No captured history</div><div class=\"detail-meta\">This day falls outside the saved history coverage.</div>";' +
+      'return;}' +
+      'detail.innerHTML="<div class=\"detail-date\">"+d.date+"</div>"+' +
+      '"<div class=\"detail-value\">+"+d.earned+" USDT</div>"+' +
+      '"<div class=\"detail-meta\">"+d.events+" changes · Referral +"+d.ref+" · Cashback +"+d.cash+" · Net "+sign(d.net)+" · Paid "+sign(d.paid)+"</div>";' +
+      '});});' +
+      'function sign(v){var n=Number(v);if(!isFinite(n))return "—";return (n>0?"+":"")+v;}' +
+      'var scroll=document.getElementById("graphScroll");' +
+      'var target=document.querySelector(".cell[data-month=\"' + monthKey(selected) + '\"]");' +
+      'if(scroll&&target){setTimeout(function(){scroll.scrollLeft=Math.max(0,target.offsetLeft-72);},0);}' +
+      '})();' +
+      '</script>' +
+      '</body></html>';
   }
 
   function css() {
     return `
-:root{--bg:#0d1117;--panel:#0d1117;--text:#f0f6fc;--muted:#8b949e;--border:#30363d;--soft:#161b22;--blue:#58a6ff;--lv0:#161b22;--lv1:#0e4429;--lv2:#006d32;--lv3:#26a641;--lv4:#39d353}
+:root{
+  --page:#000000;
+  --panel:#0d1117;
+  --text:#f0f6fc;
+  --muted:#8b949e;
+  --border:#21262d;
+  --border-strong:#30363d;
+  --blue:#58a6ff;
+  --lv0:#161b22;
+  --lv1:#0e4429;
+  --lv2:#006d32;
+  --lv3:#26a641;
+  --lv4:#39d353;
+}
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-body{min-height:100vh}
-a{color:inherit;text-decoration:none}
-main{width:min(100%,760px);margin:0 auto;padding:calc(28px + env(safe-area-inset-top)) 18px calc(36px + env(safe-area-inset-bottom))}
-header{height:48px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid var(--border);margin-bottom:26px}
-.brand{font:600 13px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em}.sub{margin-top:5px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em}.dashboard{color:var(--muted);font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.07em}.dashboard:hover{color:var(--text)}
-.summary{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--border);border-radius:6px;margin-bottom:14px}.summary>div{min-width:0;padding:16px 14px}.summary>div+div{border-left:1px solid var(--border)}label,.summary label{display:block;color:var(--muted);font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em}.summary strong{display:block;margin-top:7px;font-size:23px;line-height:1.05;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.summary small{display:block;margin-top:5px;color:var(--muted);font:9px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.05em}
-.note{margin:0 0 14px;padding:9px 11px;border:1px solid var(--border);border-radius:4px;color:var(--muted);font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-.calendar-box{border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:14px}.monthbar{display:grid;grid-template-columns:28px 1fr 28px;align-items:center;margin-bottom:18px}.monthbar>a{height:28px;border:1px solid var(--border);border-radius:4px;display:grid;place-items:center;color:var(--muted);font-size:20px;line-height:1}.monthbar>a:hover{color:var(--text);border-color:#8b949e}.monthbar>div{text-align:center}.monthbar h1{margin:0;font:600 15px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}.monthbar p{margin:5px 0 0;color:var(--muted);font:9px ui-monospace,SFMono-Regular,Menlo,monospace}
-.weekdays,.calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}.weekdays{margin-bottom:6px}.weekdays span{text-align:center;color:#6e7681;font:600 8px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.03em}.day{position:relative;aspect-ratio:1;border:1px solid rgba(240,246,252,.05);border-radius:2px;padding:0;appearance:none;-webkit-appearance:none;background:var(--lv0);cursor:pointer;color:rgba(240,246,252,.55);font:500 clamp(8px,2.8vw,11px) ui-monospace,SFMono-Regular,Menlo,monospace}.day span{position:absolute;left:5px;top:4px}.day.empty{background:transparent;border-color:transparent;cursor:default}.day.lv1{background:var(--lv1)}.day.lv2{background:var(--lv2)}.day.lv3{background:var(--lv3);color:#d7fbe3}.day.lv4{background:var(--lv4);color:#07130b}.day:hover:not(.empty){outline:1px solid #8b949e;outline-offset:1px}.day.today{outline:1px solid var(--blue);outline-offset:1px}.day.selected{outline:1px solid var(--text);outline-offset:1px}
-.legend{display:flex;align-items:center;justify-content:flex-end;gap:4px;margin-top:14px;color:var(--muted);font:8px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}.legend i{width:11px;height:11px;border-radius:2px;border:1px solid rgba(240,246,252,.05)}.legend .lv0{background:var(--lv0)}.legend .lv1{background:var(--lv1)}.legend .lv2{background:var(--lv2)}.legend .lv3{background:var(--lv3)}.legend .lv4{background:var(--lv4)}
-.detail{border:1px solid var(--border);border-radius:6px;padding:16px}.detail-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.detail-head span{color:var(--muted);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.detail-head strong{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}.detail-main{margin:9px 0 15px;font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em}.detail-grid{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--border);border-left:1px solid var(--border)}.detail-grid>div{min-width:0;padding:11px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}.detail-grid strong{display:block;margin-top:6px;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis}.detail-grid label{font-size:8px}
-footer{margin-top:14px;color:#484f58;text-align:center;font:8px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}.nodata{margin-top:60px;color:var(--text);font:600 22px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}.nodata span{color:var(--muted);font-size:11px;font-weight:400}
-@media(max-width:520px){main{padding-left:12px;padding-right:12px}.summary>div{padding:13px 9px}.summary strong{font-size:19px}.calendar-box{padding:12px}.weekdays,.calendar{gap:4px}.detail-grid{grid-template-columns:repeat(2,1fr)}}`;
+html,body{margin:0;min-height:100%;background:var(--page);color:var(--text)}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--muted);text-decoration:none}
+a:active{opacity:.72}
+.shell{width:min(100%,920px);margin:0 auto;padding:calc(24px + env(safe-area-inset-top)) 16px calc(32px + env(safe-area-inset-bottom))}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:26px}
+.top h1{margin:0;font-size:20px;line-height:1.25;font-weight:600;letter-spacing:-.2px}
+.top p{margin:5px 0 0;color:var(--muted);font-size:12px}
+.top>a{font-size:12px;padding-top:3px}
+.month-summary{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:18px}
+.summary-copy{min-width:0}
+.month-label{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.08em}
+.amount{margin-top:7px;font-size:clamp(31px,8vw,44px);line-height:1.05;font-weight:600;letter-spacing:-1.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.amount span{font-size:13px;color:var(--muted);letter-spacing:0;font-weight:500}
+.meta{margin-top:9px;color:var(--muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.month-nav{display:flex;flex:none;border:1px solid var(--border-strong);border-radius:6px;overflow:hidden}
+.month-nav a{width:34px;height:32px;display:grid;place-items:center;color:var(--text);font-size:18px;background:var(--panel)}
+.month-nav a+a{border-left:1px solid var(--border-strong)}
+.note{margin:0 0 12px;color:#d29922;font-size:11px;line-height:1.5}
+.graph-panel{background:var(--panel);border:1px solid var(--border-strong);border-radius:6px;padding:14px 14px 12px}
+.graph-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:10px;font-size:12px;color:var(--text)}
+.coverage{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+.graph-scroll{overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;padding-bottom:5px}
+.graph-inner{display:grid;grid-template-columns:30px max-content;column-gap:8px;width:max-content;min-width:100%}
+.weekday-labels{padding-top:19px;display:grid;grid-template-rows:repeat(7,10px);row-gap:3px;color:var(--muted);font-size:9px;line-height:10px}
+.weekday-labels span{text-align:right}
+.graph-main{width:max-content}
+.month-labels{height:19px;display:grid;grid-template-columns:repeat(var(--weeks),10px);column-gap:3px;color:var(--muted);font-size:9px;line-height:12px}
+.month-labels span{white-space:nowrap;overflow:visible}
+.cells{display:grid;grid-template-rows:repeat(7,10px);grid-auto-flow:column;grid-auto-columns:10px;gap:3px;width:max-content}
+.cell,.legend i{width:10px;height:10px;border:1px solid rgba(240,246,252,.04);border-radius:2px;background:var(--lv0);padding:0;appearance:none;-webkit-appearance:none}
+.cell{cursor:pointer;transition:outline-color .12s ease,box-shadow .12s ease,opacity .12s ease}
+.cell.blank{visibility:hidden}
+.cell.unknown{background:#090d12;border-color:#111820;opacity:.52}
+.cell.future{opacity:.22}
+.cell.month-focus{opacity:1}
+.cell.today{outline:1px solid var(--blue);outline-offset:1px}
+.cell.selected{outline:1px solid #f0f6fc;outline-offset:1px}
+.cell.lv1,.legend .lv1{background:var(--lv1)}
+.cell.lv2,.legend .lv2{background:var(--lv2);box-shadow:0 0 3px rgba(0,109,50,.28)}
+.cell.lv3,.legend .lv3{background:var(--lv3);box-shadow:0 0 4px rgba(38,166,65,.34)}
+.cell.lv4,.legend .lv4{background:var(--lv4);box-shadow:0 0 7px rgba(57,211,83,.46)}
+.cell.lv0,.legend .lv0{background:var(--lv0)}
+@media(hover:hover){.cell:hover{outline:1px solid rgba(240,246,252,.75);outline-offset:1px}}
+.legend{display:flex;align-items:center;justify-content:flex-end;gap:4px;margin-top:10px;color:var(--muted);font-size:10px}
+.detail{margin-top:14px;border:1px solid var(--border);border-radius:6px;padding:13px 14px;background:#05070a}
+.detail-date{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.detail-value{margin-top:5px;font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.detail-meta{margin-top:7px;color:var(--muted);font-size:11px;line-height:1.6;overflow-wrap:anywhere}
+footer{margin-top:14px;color:#484f58;font-size:10px}
+.empty{margin-top:28px;border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:24px;color:var(--muted);font-size:13px}
+@media(max-width:560px){
+  .shell{padding-left:14px;padding-right:14px}
+  .month-summary{align-items:flex-start}
+  .amount{font-size:clamp(29px,9.3vw,38px)}
+  .graph-panel{padding:12px 10px 10px}
+  .graph-head{align-items:flex-start;flex-direction:column;gap:4px}
+  .coverage{font-size:9px}
+  .meta{max-width:270px}
+}
+`;
+  }
+
+  function respond(body, contentType) {
+    $done({
+      response: {
+        status: 200,
+        headers: {
+          "Content-Type": contentType || "text/html; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          "Pragma": "no-cache",
+          "Expires": "0"
+        },
+        body: body
+      }
+    });
   }
 
   const store = readStore();
-  $done({
-    response: {
-      status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-        "Pragma": "no-cache"
-      },
-      body: page(store)
-    }
-  });
+  respond(page(store));
 })();
