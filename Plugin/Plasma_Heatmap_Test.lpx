@@ -1,5 +1,5 @@
 #!name = Plasma Heatmap Test
-#!desc = 实验版 v5：轻量 GitHub Contributions 风格奖励热力图。只读取现有 Tracker 本地数据，不写入、不上传。
+#!desc = 实验版 v6：日期横向递增的单月 GitHub Dark 奖励热力图。只读取现有 Tracker 本地数据，不写入、不上传。
 #!author = ChatGPT
 #!system = iOS,iPadOS,macOS
 #!tag = Plasma,Heatmap,Experimental
@@ -9,4 +9,4 @@
 plasma-heatmap.test = 192.0.2.1
 
 [Script]
-http-request ^http:\/\/plasma-heatmap\.test(?:\/.*)?$ script-path=https://raw.githubusercontent.com/Sukewarm/conf/b79b348b5d46d57a84b3fd96b948539e8627e31a/Script/plasma_heatmap_test.js,requires-body=false,timeout=10,tag=Plasma Heatmap Test v5,enable=true
+http-request ^http:\/\/plasma-heatmap\.test(?:\/.*)?$ script-path=https://raw.githubusercontent.com/Sukewarm/conf/99ac775771b7b1dbd1658b5c94545655a7956d8b/Script/plasma_heatmap_test.js,requires-body=false,timeout=10,tag=Plasma Heatmap Test v6,enable=true
